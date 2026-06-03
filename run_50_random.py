@@ -1,0 +1,51 @@
+import subprocess, httpx, base64, json, time, sys, os
+from pathlib import Path
+
+BASE = Path(__file__).parent.resolve()
+TEST_DIR = BASE / 'test-random50'
+OUT_DIR = BASE / 'output'
+
+NUM_IMAGES = 50
+
+LLAMA_BIN = Path(os.environ.get('LLAMA_BIN', Path.home() / '.llama' / 'bin'))
+LLAMA_MODELS = Path(os.environ.get('LLAMA_MODELS', Path.home() / '.llama' / 'models'))
+
+logfile = open(BASE / 'paddle50_srv.log', 'w')
+proc = subprocess.Popen([
+    str(LLAMA_BIN / 'llama-server.exe'),
+    '-m', str(LLAMA_MODELS / 'PaddleOCR-VL-1.6-GGUF.gguf'),
+    '--mmproj', str(LLAMA_MODELS / 'PaddleOCR-VL-1.6-GGUF-mmproj.gguf'),
+    '--port', '18333', '--host', '127.0.0.1',
+    '--temp', '0', '--top-k', '1', '-ngl', '99',
+    '--ctx-size', '8192', '--no-warmup',
+], stdout=logfile, stderr=logfile, text=True)
+time.sleep(10)
+
+prompt = 'Extract ALL text from this image verbatim. Output only the raw text content.'
+
+pdir = OUT_DIR / 'paddleocr-vl' / 'random50'
+pdir.mkdir(parents=True, exist_ok=True)
+
+for i in range(1, NUM_IMAGES + 1):
+    img_path = TEST_DIR / f'test{i}.png'
+    b64 = base64.b64encode(img_path.read_bytes()).decode()
+    body = {
+        'messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{b64}'}},
+            {'type': 'text', 'text': prompt}
+        ]}],
+        'temperature': 0,
+        'max_tokens': 3800,
+    }
+    t0 = time.time()
+    try:
+        with httpx.Client(timeout=120) as client:
+            r = client.post('http://127.0.0.1:18333/v1/chat/completions', json=body)
+            result = r.json()['choices'][0]['message']['content']
+        (pdir / f'test{i}.md').write_text(result, encoding='utf-8')
+        print(f'Paddle test{i}: {len(result)} chars in {time.time()-t0:.1f}s', flush=True)
+    except Exception as e:
+        print(f'Paddle test{i}: FAILED - {e}', flush=True)
+
+proc.terminate()
+print(f'PaddleOCR done! {NUM_IMAGES} images processed')
